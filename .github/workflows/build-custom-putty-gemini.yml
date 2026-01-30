@@ -11,112 +11,121 @@ jobs:
     - name: Clone PuTTY Repository
       run: |
         git clone https://git.tartarus.org/simon/putty.git .
-        # Fetch tags and checkout the latest version (e.g., 0.82)
         git fetch --tags
-        # Get latest tag that looks like a version (ignoring pre-releases if any)
+        # checkout the latest version tag (e.g. 0.82)
         $tag = git tag --sort=-v:refname | Select-Object -First 1
         Write-Host "Checking out version: $tag"
         git checkout $tag
 
-    - name: Patch UI (Python)
+    - name: Resize UI (Python)
       shell: python
       run: |
         import re
         import sys
-        import glob
+        import os
 
         # --- CONFIGURATION ---
-        ADD_HEIGHT = 200  # How much taller to make the list
+        ADD_HEIGHT = 200
         # ---------------------
 
-        # 1. FIND THE RESOURCE FILE
-        # It's usually windows/putty-common.rc2 or windows/putty.rc depending on version
-        candidates = glob.glob("windows/*.rc") + glob.glob("windows/*.rc2")
+        # 1. SEARCH FOR THE RESOURCE FILE
+        # It usually contains "IDD_MAINBOX"
         target_file = None
-
-        print("Scanning for IDD_MAINBOX...")
-        for filepath in candidates:
-            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                if "IDD_MAINBOX" in f.read():
-                    target_file = filepath
-                    break
         
-        if not target_file:
-            print("CRITICAL: Could not find file containing IDD_MAINBOX")
-            sys.exit(1)
-            
-        print(f"Patching file: {target_file}")
+        print("Searching for resource file containing IDD_MAINBOX...")
+        
+        for root, dirs, files in os.walk("."):
+            for file in files:
+                if file.endswith(".rc") or file.endswith(".rc2"):
+                    path = os.path.join(root, file)
+                    try:
+                        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                            if "IDD_MAINBOX" in f.read():
+                                target_file = path
+                                break
+                    except:
+                        continue
+            if target_file: break
 
+        if not target_file:
+            print("CRITICAL: Could not find resource file. Dumping directory structure:")
+            for root, dirs, files in os.walk("."):
+                print(root, files)
+            sys.exit(1)
+
+        print(f"Found target file: {target_file}")
+
+        # Read content
         with open(target_file, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
 
-        # 2. RESIZE MAIN WINDOW
-        # Look for: IDD_MAINBOX ... 0, 0, 300, 218
+        # 2. GET ORIGINAL DIMENSIONS
+        # IDD_MAINBOX ... 0, 0, 300, 218
         main_box_pattern = r'(IDD_MAINBOX\s+[^\n]+0,\s*0,\s*\d+,\s*)(\d+)'
         match = re.search(main_box_pattern, content)
-        if match:
-            h = int(match.group(2))
-            # Only resize if it looks like the default size (approx 200-250)
-            original_main_height = h
-            new_main_height = h + ADD_HEIGHT
-            content = content.replace(match.group(0), f"{match.group(1)}{new_main_height}")
-            print(f"Main Window: {h} -> {new_main_height}")
-        else:
-            print("ERROR: Could not find Main Window definition")
+        
+        if not match:
+            print("ERROR: Regex failed to match IDD_MAINBOX dimensions.")
             sys.exit(1)
 
-        # 3. RESIZE GROUP BOX ("Load, save or delete a stored session")
-        # This box surrounds the list. If we don't resize this, it looks weird.
-        # Pattern: GROUPBOX "text", id, x, y, w, h
-        group_pattern = r'(GROUPBOX\s+"Load, save or delete[^"]+",\s*\d+,\s*\d+,\s*\d+,\s*\d+,\s*)(\d+)'
-        match = re.search(group_pattern, content)
-        if match:
-            h = int(match.group(2))
-            content = content.replace(match.group(0), f"{match.group(1)}{h + ADD_HEIGHT}")
-            print(f"Group Box: {h} -> {h + ADD_HEIGHT}")
-        else:
-            print("WARNING: Could not find Session GroupBox.")
+        original_main_height = int(match.group(2))
+        new_main_height = original_main_height + ADD_HEIGHT
+        
+        # Apply Main Window Resize
+        content = content.replace(match.group(0), f"{match.group(1)}{new_main_height}")
+        print(f"Resized Main Window: {original_main_height} -> {new_main_height}")
+
+        # 3. RESIZE GROUPBOX ("Load, save or delete a stored session")
+        # This surrounds the list. We must find it by text or it will overlap.
+        # It looks like: GROUPBOX "Load, save...", IDC, x, y, w, h
+        # We use a loose regex for the text in case punctuation changes.
+        gb_pattern = r'(GROUPBOX\s+"[^"]*Load, save[^"]*",\s*[^,]+,\s*\d+,\s*\d+,\s*\d+,\s*)(\d+)'
+        
+        def resize_gb(m):
+            h = int(m.group(2))
+            print(f"Resized GroupBox: {h} -> {h + ADD_HEIGHT}")
+            return f"{m.group(1)}{h + ADD_HEIGHT}"
+
+        content, count = re.subn(gb_pattern, resize_gb, content)
+        if count == 0:
+            print("WARNING: Could not find 'Load, save' GroupBox. UI might look overlapped.")
 
         # 4. RESIZE SESSION LISTBOX
-        # We look for a LISTBOX that has a width of approx 120 and height approx 100-115
-        list_pattern = r'(LISTBOX\s+[^,]+,\s*\d+,\s*\d+,\s*120\s*,\s*)(\d+)'
+        # It is usually inside that groupbox. Width is almost always 120.
+        # LISTBOX 1004, ... 120, 110
+        lb_pattern = r'(LISTBOX\s+[^,]+,\s*\d+,\s*\d+,\s*120\s*,\s*)(\d+)'
         
-        def resize_list(m):
+        def resize_lb(m):
             h = int(m.group(2))
-            # Standard session list is usually around 110 height
-            if 90 < h < 140:
-                print(f"Session List: {h} -> {h + ADD_HEIGHT}")
+            # Safety check: standard list is usually 100-140 height
+            if 80 < h < 160:
+                print(f"Resized ListBox: {h} -> {h + ADD_HEIGHT}")
                 return f"{m.group(1)}{h + ADD_HEIGHT}"
             return m.group(0)
 
-        content, count = re.subn(list_pattern, resize_list, content)
-        if count == 0:
-            print("WARNING: Did not find a standard 120-width ListBox. Trying looser search...")
-            # Fallback: Find generic listbox inside the main box area? 
-            # Often ID is 1004 or IDC_SESSIONS. Let's try searching for the specific ID 1004.
-            # LISTBOX 1004, ...
-            content = re.sub(r'(LISTBOX\s+1004,\s*\d+,\s*\d+,\s*\d+\s*,\s*)(\d+)', 
-                             lambda m: f"{m.group(1)}{int(m.group(2)) + ADD_HEIGHT}", content)
+        content, count = re.subn(lb_pattern, resize_lb, content)
 
-        # 5. MOVE BOTTOM BUTTONS
-        # Move Open/Cancel/Help buttons down
+        # 5. MOVE BOTTOM BUTTONS (Open, Cancel, Help)
+        # We define a "Bottom Zone". Anything currently in that zone gets pushed down.
         bottom_threshold = original_main_height - 35
         
-        # Regex for buttons (PUSHBUTTON or DEFPUSHBUTTON)
-        btn_pattern = r'((?:PUSHBUTTON|DEFPUSHBUTTON)\s+"[^"]+",\s*[^,]+,\s*\d+,\s*)(\d+)(,.*)'
+        # Matches PUSHBUTTON, DEFPUSHBUTTON, and LTEXT (for the "About" link)
+        # Format: TYPE "Text", ID, X, Y, W, H
+        element_pattern = r'((?:PUSHBUTTON|DEFPUSHBUTTON|LTEXT)\s+"[^"]+",\s*[^,]+,\s*\d+,\s*)(\d+)(,.*)'
 
-        def move_btn(m):
+        def move_element(m):
             prefix = m.group(1)
             y = int(m.group(2))
             suffix = m.group(3)
+            
             if y > bottom_threshold:
                 return f"{prefix}{y + ADD_HEIGHT}{suffix}"
             return m.group(0)
 
-        content = re.sub(btn_pattern, move_btn, content)
-        print("Moved bottom buttons.")
+        content, count = re.subn(element_pattern, move_element, content)
+        print(f"Moved {count} bottom elements down.")
 
-        # WRITE CHANGES
+        # Save changes
         with open(target_file, 'w', encoding='utf-8') as f:
             f.write(content)
 
