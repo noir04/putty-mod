@@ -1,7 +1,7 @@
 name: Build Custom PuTTY
 
 on:
-  workflow_dispatch: # Allows you to manually trigger the build from the Actions tab
+  workflow_dispatch:
 
 jobs:
   build:
@@ -9,54 +9,44 @@ jobs:
 
     steps:
     - name: Clone PuTTY Repository
-      run: |
-        git clone https://git.tartarus.org/simon/putty.git .
-
-    - name: Install CMake
-      uses: jwlawrence/cmake-installer@v1.13
-      with:
-        cmake-version: 'latest'
+      # We clone the official repository
+      run: git clone https://git.tartarus.org/simon/putty.git .
 
     - name: Modify Session List Size
       shell: powershell
       run: |
-        # Define the target file
         $rcFile = "windows/putty.rc"
         
-        # Check if file exists
         if (-Not (Test-Path $rcFile)) {
-            Write-Error "Could not find $rcFile. The source structure may have changed."
+            Write-Error "Could not find $rcFile. Source structure may have changed."
             exit 1
         }
 
-        # Read the file content
         $content = Get-Content $rcFile -Raw
 
-        # EXPLANATION OF MODIFICATION:
-        # We need to find the specific dialog resource and listbox control.
-        # IDD_MAINBOX is usually the main config dialog.
-        # The ListBox often has an ID like IDC_SESSIONS (or a generic ID like 1002/1004).
-        # We generally need to increase the dialog height and the listbox height.
-        
-        # 1. Increase the height of the Main Box (IDD_MAINBOX)
-        # Look for: IDD_MAINBOX DIALOG DISCARDABLE 0, 0, 300, 218
-        # We replace "218" (height) with "350" to make the window taller.
-        $content = $content -replace '(IDD_MAINBOX\s+DIALOG\s+DISCARDABLE\s+\d+,\s*\d+,\s*\d+,\s*)218', '${1}350'
+        # 1. Increase Dialog Height (IDD_MAINBOX)
+        # Finds "218" (standard height) in the main dialog definition and changes it to "350"
+        if ($content -match '(IDD_MAINBOX\s+DIALOG[^0-9]+0,\s*0,\s*300,\s*)218') {
+            $content = $content -replace '(IDD_MAINBOX\s+DIALOG[^0-9]+0,\s*0,\s*300,\s*)218', '${1}350'
+            Write-Host "Success: Patched Dialog Height."
+        } else {
+            Write-Warning "Could not find IDD_MAINBOX dimensions to patch. The source code might have changed."
+        }
 
-        # 2. Increase the height of the Session ListBox
-        # This is tricky as IDs change, but it's typically defined under IDD_MAINBOX.
-        # Look for the LISTBOX keyword with specific coordinates.
-        # Default roughly: LISTBOX 1004, 10, 48, 120, 110, LBS_HASSTRINGS | ...
-        # We attempt to find the specific listbox used for sessions and increase its height (e.g., from 110 to 240).
-        # Note: This Regex assumes standard formatting. If PuTTY source changes, this requires manual update.
-        $content = $content -replace '(LISTBOX\s+\d+,\s*\d+,\s*\d+,\s*\d+,\s*)110', '${1}240'
+        # 2. Increase ListBox Height
+        # Finds "110" (standard list height) specifically inside the listbox definition and changes to "240"
+        # We look for the standard width (120) followed by height (110)
+        if ($content -match '(\s+120,\s*)110') {
+            $content = $content -replace '(\s+120,\s*)110', '${1}240'
+            Write-Host "Success: Patched ListBox Height."
+        } else {
+             Write-Warning "Could not find ListBox dimensions to patch."
+        }
 
-        # Write the changes back to the file
         Set-Content -Path $rcFile -Value $content
-        
-        Write-Host "Patched $rcFile to increase session list height."
 
     - name: Configure CMake
+      # We use the system installed CMake
       run: cmake -B build -G "Visual Studio 17 2022" -A x64
 
     - name: Build
