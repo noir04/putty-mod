@@ -28,37 +28,69 @@ jobs:
           # Many thanks to https://www.reddit.com/user/sitytitan/ for finding the things that we need to change https://www.reddit.com/r/sysadmin/comments/1ccmt2g/putty_xl_bigger_session_window/
           Write-Host "=== Modifying PuTTY session list height ==="
           
+          $errorOccurred = $false
+          
           # Change 1: Increase session listbox height in config.c
           if (Test-Path "config.c") {
             Write-Host "Modifying config.c..."
             $content = Get-Content "config.c" -Raw
+            $original = $content
             $content = $content -replace 'ssd->listbox->listbox\.height = 7;', 'ssd->listbox->listbox.height = 37;'
-            Set-Content "config.c" $content
-            Write-Host "  Changed listbox height from 7 to 37"
+            
+            if ($content -eq $original) {
+              Write-Host "ERROR: Failed to modify config.c - pattern not found!"
+              $errorOccurred = $true
+            } else {
+              Set-Content "config.c" $content
+              Write-Host "  Changed listbox height from 7 to 37"
+            }
           } else {
             Write-Host "ERROR: config.c not found!"
+            $errorOccurred = $true
           }
           
           # Change 2: Increase dialog height in windows/dialog.c
           if (Test-Path "windows\dialog.c") {
             Write-Host "Modifying windows/dialog.c..."
             $content = Get-Content "windows\dialog.c" -Raw
+            $original = $content
             $content = $content -replace 'pds_create_controls\(pds, TREE_BASE, IDCX_STDBASE, 3, 3, 235, ""\);', 'pds_create_controls(pds, TREE_BASE, IDCX_STDBASE, 3, 3, 470, "");'
-            Set-Content "windows\dialog.c" $content
-            Write-Host "  Changed dialog height from 235 to 470"
+            
+            if ($content -eq $original) {
+              Write-Host "ERROR: Failed to modify windows/dialog.c - pattern not found!"
+              $errorOccurred = $true
+            } else {
+              Set-Content "windows\dialog.c" $content
+              Write-Host "  Changed dialog height from 235 to 470"
+            }
           } else {
             Write-Host "ERROR: windows/dialog.c not found!"
+            $errorOccurred = $true
           }
           
           # Change 3: Increase main dialog box size in windows/putty-common.rc2
           if (Test-Path "windows\putty-common.rc2") {
             Write-Host "Modifying windows/putty-common.rc2..."
             $content = Get-Content "windows\putty-common.rc2" -Raw
+            $original = $content
             $content = $content -replace 'IDD_MAINBOX DIALOG DISCARDABLE 0, 0, 300, 252', 'IDD_MAINBOX DIALOG DISCARDABLE 0, 0, 350, 492'
-            Set-Content "windows\putty-common.rc2" $content
-            Write-Host "  Changed main dialog from 300x252 to 350x492"
+            
+            if ($content -eq $original) {
+              Write-Host "ERROR: Failed to modify windows/putty-common.rc2 - pattern not found!"
+              $errorOccurred = $true
+            } else {
+              Set-Content "windows\putty-common.rc2" $content
+              Write-Host "  Changed main dialog from 300x252 to 350x492"
+            }
           } else {
             Write-Host "ERROR: windows/putty-common.rc2 not found!"
+            $errorOccurred = $true
+          }
+          
+          if ($errorOccurred) {
+            Write-Host ""
+            Write-Host "=== ABORTING: One or more modifications failed ==="
+            exit 1
           }
           
           Write-Host ""
