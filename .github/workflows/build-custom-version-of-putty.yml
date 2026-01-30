@@ -25,6 +25,7 @@ jobs:
       
       - name: Increase session list visible height
         run: |
+          # Many thanks to https://www.reddit.com/user/sitytitan/ for finding the things that we need to change https://www.reddit.com/r/sysadmin/comments/1ccmt2g/putty_xl_bigger_session_window/
           Write-Host "=== Modifying PuTTY session list height ==="
           
           # Change 1: Increase session listbox height in config.c
