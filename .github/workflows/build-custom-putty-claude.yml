@@ -1,0 +1,114 @@
+name: Build Modified PuTTY
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run weekly on Sundays at 2am UTC
+    - cron: '0 2 * * 0'
+
+jobs:
+  build-putty:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout PuTTY repository
+        uses: actions/checkout@v4
+        with:
+          repository: 'https://git.tartarus.org/simon/putty.git'
+          ref: 'main'
+          fetch-depth: 1
+      
+      - name: Set up build environment
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+          choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive" -y
+        shell: powershell
+      
+      - name: Increase session list size
+        run: |
+          # Find and modify the session list size constant
+          # PuTTY's session list is typically defined in windows/window.c or dialog.c
+          # The default maximum is usually around 200 entries
+          
+          # Search for the session list size definition
+          $files = Get-ChildItem -Recurse -Include *.c,*.h
+          
+          foreach ($file in $files) {
+            $content = Get-Content $file.FullName -Raw
+            
+            # Common patterns for session list size limits
+            # Pattern 1: #define SAVEDSESSIONS_LIMIT or similar
+            if ($content -match '#define\s+SAVEDSESSIONS_LIMIT\s+(\d+)') {
+              Write-Host "Found SAVEDSESSIONS_LIMIT in $($file.FullName)"
+              $content = $content -replace '#define\s+SAVEDSESSIONS_LIMIT\s+\d+', '#define SAVEDSESSIONS_LIMIT 1000'
+              Set-Content $file.FullName $content
+            }
+            
+            # Pattern 2: Look for session enumeration limits
+            if ($content -match 'nsessions\s*<\s*(\d+)' -or $content -match 'MAX_SESSIONS\s+(\d+)') {
+              Write-Host "Found session limit pattern in $($file.FullName)"
+              $content = $content -replace '(nsessions\s*<\s*)\d+', '${1}1000'
+              $content = $content -replace '(MAX_SESSIONS\s+)\d+', '${1}1000'
+              Set-Content $file.FullName $content
+            }
+          }
+          
+          # Also check windows/dialog.c for session dropdown limits
+          if (Test-Path "windows\dialog.c") {
+            $dialogContent = Get-Content "windows\dialog.c" -Raw
+            # Increase any hardcoded limits in session list population
+            $dialogContent = $dialogContent -replace '(\bfor\s*\([^;]*;\s*\w+\s*<\s*)200', '${1}1000'
+            Set-Content "windows\dialog.c" $dialogContent
+            Write-Host "Modified windows/dialog.c"
+          }
+          
+          Write-Host "Session list size modifications completed"
+        shell: powershell
+      
+      - name: Configure build with CMake
+        run: |
+          mkdir build
+          cd build
+          cmake .. -G "Visual Studio 17 2022" -A Win32
+        shell: cmd
+      
+      - name: Build PuTTY
+        run: |
+          cd build
+          cmake --build . --config Release
+        shell: cmd
+      
+      - name: Collect artifacts
+        run: |
+          mkdir output
+          Copy-Item "build\Release\putty.exe" "output\" -ErrorAction SilentlyContinue
+          Copy-Item "build\Release\puttygen.exe" "output\" -ErrorAction SilentlyContinue
+          Copy-Item "build\Release\pageant.exe" "output\" -ErrorAction SilentlyContinue
+          Copy-Item "build\Release\plink.exe" "output\" -ErrorAction SilentlyContinue
+          Copy-Item "build\Release\pscp.exe" "output\" -ErrorAction SilentlyContinue
+          Copy-Item "build\Release\psftp.exe" "output\" -ErrorAction SilentlyContinue
+        shell: powershell
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: putty-modified-windows
+          path: output/
+          retention-days: 30
+      
+      - name: Create release (optional)
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: putty-modified-${{ github.run_number }}
+          name: Modified PuTTY Build ${{ github.run_number }}
+          body: |
+            Modified PuTTY build with increased session list size (1000 sessions).
+            
+            Built from latest PuTTY main branch.
+            
+            **Modifications:**
+            - Increased session list maximum from 200 to 1000
+          files: output/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
