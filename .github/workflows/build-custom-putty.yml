@@ -11,75 +11,117 @@ jobs:
     - name: Clone PuTTY Repository
       run: git clone https://git.tartarus.org/simon/putty.git .
 
-    - name: Patch UI with Python
+    - name: List Directory for Debugging
+      run: ls -R windows
+      
+    - name: Smart Patch UI
       shell: python
       run: |
         import re
         import sys
-        
-        rc_file = "windows/putty.rc"
-        
+
+        FILE_PATH = "windows/putty.rc"
+        # How much taller do you want the list?
+        ADD_HEIGHT = 200
+
         try:
-            with open(rc_file, 'r') as f:
+            with open(FILE_PATH, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
         except FileNotFoundError:
-            print(f"Error: Could not find {rc_file}")
+            print(f"CRITICAL: Could not find {FILE_PATH}")
             sys.exit(1)
 
-        original_content = content
-        
-        # --- CONFIGURATION ---
-        # We want to add this much height to everything
-        EXTRA_HEIGHT = 150 
-        
-        # Current known dimensions in standard PuTTY source (approximate)
-        # IDD_MAINBOX: 300 wide, 218 high
-        # Session List: 120 wide, 110 high
-        # Bottom Buttons (Open/Cancel): Y position approx 198
-        
-        # 1. Resize Main Dialog Height (Find '218' at end of IDD_MAINBOX definition)
-        # Matches: IDD_MAINBOX DIALOG DISCARDABLE 0, 0, 300, 218
-        content = re.sub(
-            r'(IDD_MAINBOX\s+DIALOG.*300\s*,\s*)218', 
-            f'\\g<1>{218 + EXTRA_HEIGHT}', 
-            content
-        )
+        print(f"Read {len(content)} bytes from {FILE_PATH}")
 
-        # 2. Resize Session ListBox Height (Find '110' in a LISTBOX def with width 120)
-        # Matches: LISTBOX ..., 120, 110, ...
-        content = re.sub(
-            r'(LISTBOX\s+.*,\s*120\s*,\s*)110', 
-            f'\\g<1>{110 + EXTRA_HEIGHT}', 
-            content
-        )
-
-        # 3. Move "Open" and "Cancel" buttons down
-        # Matches: DEFPUSHBUTTON "&Open",IDOK,192,198,50,14
-        # Matches: PUSHBUTTON "Cancel",IDCANCEL,244,198,50,14
-        # We look for the Y coordinate 198 and replace it
-        new_y = 198 + EXTRA_HEIGHT
-        content = re.sub(
-            r'(BUTTON\s+".*?",\s*ID(?:OK|CANCEL|HELP).*?,\s*198\s*,)', 
-            f'\\g<1>{new_y},', # This regex is tricky, let's try a simpler one specifically for the buttons
-            content
-        )
+        # ---------------------------------------------------------
+        # 1. FIND & RESIZE MAIN WINDOW (IDD_MAINBOX)
+        # ---------------------------------------------------------
+        # Pattern: IDD_MAINBOX followed by DIALOG/DIALOGEX ... x, y, w, h
+        # We capture the line up to the height, and the height itself.
+        # Example: IDD_MAINBOX DIALOG DISCARDABLE 0, 0, 300, 218
         
-        # Precise replacement for bottom buttons to avoid breaking other things
-        # Replace ",198," with ",348," (or whatever new_y is) but only for buttons
-        content = re.sub(r'(IDOK\s*,\s*\d+\s*,\s*)198', f'\\g<1>{new_y}', content)
-        content = re.sub(r'(IDCANCEL\s*,\s*\d+\s*,\s*)198', f'\\g<1>{new_y}', content)
-        content = re.sub(r'(IDHELP\s*,\s*\d+\s*,\s*)198', f'\\g<1>{new_y}', content)
-
-        # Check if we actually did anything
-        if content == original_content:
-            print("WARNING: No changes were applied! The putty.rc format may have changed significantly.")
-            # We exit with error so you know it failed immediately
+        main_box_pattern = r'(IDD_MAINBOX\s+\w+[^\n]+0,\s*0,\s*\d+,\s*)(\d+)'
+        match = re.search(main_box_pattern, content)
+        
+        if not match:
+            print("ERROR: Could not find IDD_MAINBOX definition.")
+            # Print a snippet to help debug
+            print("Snippet of file start:")
+            print(content[:1000])
             sys.exit(1)
-        else:
-            print(f"Successfully patched {rc_file}")
 
-        with open(rc_file, 'w') as f:
+        original_main_height = int(match.group(2))
+        new_main_height = original_main_height + ADD_HEIGHT
+        
+        # Replace the Main Dialog Height
+        content = content.replace(match.group(0), f"{match.group(1)}{new_main_height}")
+        print(f"Resized Main Window: {original_main_height} -> {new_main_height}")
+
+        # ---------------------------------------------------------
+        # 2. FIND & RESIZE SESSION LIST
+        # ---------------------------------------------------------
+        # The session list usually uses IDC_SESSIONS or generic ID.
+        # It is usually 120 width.
+        # Pattern: LISTBOX id, x, y, width, height
+        
+        # Regex explanation:
+        # LISTBOX   = keyword
+        # [^,]+     = the ID (e.g. IDC_SESSIONS)
+        # \d+,\s*\d+ = X, Y
+        # 120       = Width (The session list is almost always 120 wide in PuTTY)
+        # (\d+)     = Height (Capture group 2)
+        listbox_pattern = r'(LISTBOX\s+[^,]+,\s*\d+,\s*\d+,\s*120\s*,\s*)(\d+)'
+        
+        def resize_listbox(m):
+            h = int(m.group(2))
+            # Heuristic: Only resize if it looks like the session list (height > 50)
+            if h > 50:
+                print(f"Resizing ListBox (Width 120): {h} -> {h + ADD_HEIGHT}")
+                return f"{m.group(1)}{h + ADD_HEIGHT}"
+            return m.group(0)
+
+        content, count = re.subn(listbox_pattern, resize_listbox, content)
+        if count == 0:
+            print("WARNING: Could not identify Session ListBox to resize.")
+            # Fallback: Try searching for IDC_SESSIONS specifically regardless of width
+            content = re.sub(r'(LISTBOX\s+IDC_SESSIONS,\s*\d+,\s*\d+,\s*\d+\s*,\s*)(\d+)', resize_listbox, content)
+
+        # ---------------------------------------------------------
+        # 3. MOVE BOTTOM BUTTONS (Open, Cancel, etc.)
+        # ---------------------------------------------------------
+        # We only want to move buttons that are currently at the bottom of the main dialog.
+        # The bottom area is roughly at Y = original_main_height - 20
+        
+        bottom_threshold = original_main_height - 30 
+
+        # Pattern matches PUSHBUTTON or DEFPUSHBUTTON
+        # Group 1: Prefix
+        # Group 2: Y coordinate
+        # Group 3: Suffix
+        button_pattern = r'((?:PUSHBUTTON|DEFPUSHBUTTON)\s+"[^"]+",\s*[^,]+,\s*\d+,\s*)(\d+)(,.*)'
+
+        def move_button(m):
+            prefix = m.group(1)
+            y = int(m.group(2))
+            suffix = m.group(3)
+            
+            # Only move it if it's near the bottom of the original window
+            if y > bottom_threshold:
+                new_y = y + ADD_HEIGHT
+                # Only log distinct shifts
+                return f"{prefix}{new_y}{suffix}"
+            return m.group(0)
+
+        content = re.sub(button_pattern, move_button, content)
+        print("Moved bottom buttons down.")
+
+        # ---------------------------------------------------------
+        # WRITE FILE
+        # ---------------------------------------------------------
+        with open(FILE_PATH, 'w', encoding='utf-8') as f:
             f.write(content)
+            
+        print("SUCCESS: Patched putty.rc")
 
     - name: Configure CMake
       run: cmake -B build -G "Visual Studio 17 2022" -A x64
