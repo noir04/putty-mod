@@ -11,9 +11,11 @@ jobs:
     runs-on: windows-latest
     
     steps:
-      - name: Checkout PuTTY repository
+      - name: Get latest PuTTY release
+        id: get_release
         run: |
-          git clone https://git.tartarus.org/simon/putty.git .
+          # Fetch tags and get the latest release tag
+          git clone --depth 1 --branch $(git ls-remote --tags --refs https://git.tartarus.org/simon/putty.git | grep -o 'refs/tags/[0-9].*' | sort -V | tail -n1 | sed 's|refs/tags/||') https://git.tartarus.org/simon/putty.git .
         shell: bash
       
       - name: Set up build environment
@@ -22,45 +24,59 @@ jobs:
           choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive" -y
         shell: powershell
       
-      - name: Increase session list size
+      - name: Increase session list visible height
         run: |
-          # Find and modify the session list size constant
-          # PuTTY's session list is typically defined in windows/window.c or dialog.c
-          # The default maximum is usually around 200 entries
+          # Increase the visible height of the session list dropdown
+          # The session list height is typically controlled in windows/dialog.c or windows/controls.c
+          # Look for the listbox height parameter in the saved sessions control
           
-          # Search for the session list size definition
           $files = Get-ChildItem -Recurse -Include *.c,*.h
           
           foreach ($file in $files) {
             $content = Get-Content $file.FullName -Raw
             
-            # Common patterns for session list size limits
-            # Pattern 1: #define SAVEDSESSIONS_LIMIT or similar
-            if ($content -match '#define\s+SAVEDSESSIONS_LIMIT\s+(\d+)') {
-              Write-Host "Found SAVEDSESSIONS_LIMIT in $($file.FullName)"
-              $content = $content -replace '#define\s+SAVEDSESSIONS_LIMIT\s+\d+', '#define SAVEDSESSIONS_LIMIT 1000'
+            # Look for session list box creation - typically has a height parameter
+            # Common patterns: CreateWindow with "ListBox" or similar controls
+            # The height is usually specified in dialog units or pixels
+            
+            # Pattern for dialog box height (commonly 3 or 4 dialog units, increase to 12-15)
+            if ($content -match 'ctrl_listbox.*\bheight\s*,\s*(\d+)') {
+              Write-Host "Found listbox height in $($file.FullName)"
+              $content = $content -replace '(ctrl_listbox.*\bheight\s*,\s*)(\d+)', '${1}15'
               Set-Content $file.FullName $content
             }
             
-            # Pattern 2: Look for session enumeration limits
-            if ($content -match 'nsessions\s*<\s*(\d+)' -or $content -match 'MAX_SESSIONS\s+(\d+)') {
-              Write-Host "Found session limit pattern in $($file.FullName)"
-              $content = $content -replace '(nsessions\s*<\s*)\d+', '${1}1000'
-              $content = $content -replace '(MAX_SESSIONS\s+)\d+', '${1}1000'
-              Set-Content $file.FullName $content
+            # Look for CTRL_LISTBOX definitions with height parameters
+            if ($file.Name -eq "dialog.c" -or $file.Name -eq "config.c") {
+              # Increase the height value in dialog unit specifications
+              # Typical: height of 3 or 4, increase to 12-15 for more visible items
+              $modified = $false
+              
+              # Pattern: numbers that look like dialog heights (small numbers 3-10)
+              if ($content -match 'savedlist.*') {
+                $content = $content -replace '(\bctrl_listbox\([^,]+,\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*)([3-9])(\s*,)', '${1}15${3}'
+                $modified = $true
+              }
+              
+              if ($modified) {
+                Set-Content $file.FullName $content
+                Write-Host "Modified dialog height in $($file.FullName)"
+              }
             }
           }
           
-          # Also check windows/dialog.c for session dropdown limits
-          if (Test-Path "windows\dialog.c") {
-            $dialogContent = Get-Content "windows\dialog.c" -Raw
-            # Increase any hardcoded limits in session list population
-            $dialogContent = $dialogContent -replace '(\bfor\s*\([^;]*;\s*\w+\s*<\s*)200', '${1}1000'
-            Set-Content "windows\dialog.c" $dialogContent
-            Write-Host "Modified windows/dialog.c"
+          # Specifically target windows/config.c where session panel is defined
+          if (Test-Path "windows\config.c") {
+            $configContent = Get-Content "windows\config.c" -Raw
+            # The saved sessions listbox typically uses COMP_LISTBOX with a height of 3-4
+            # Increase to 15 for better visibility
+            $configContent = $configContent -replace '(savedlist[^\n]*ctrl_listbox[^\n]*,\s*)([3-9])(\s*,)', '${1}15${3}'
+            $configContent = $configContent -replace '(COMP_LISTBOX[^\n]*savedlist[^\n]*,\s*)([3-9])(\s*\))', '${1}15${3}'
+            Set-Content "windows\config.c" $configContent
+            Write-Host "Modified session list height in windows/config.c"
           }
           
-          Write-Host "Session list size modifications completed"
+          Write-Host "Session list height modifications completed"
         shell: powershell
       
       - name: Configure build with CMake
@@ -79,12 +95,7 @@ jobs:
       - name: Collect artifacts
         run: |
           mkdir output
-          Copy-Item "build\Release\putty.exe" "output\" -ErrorAction SilentlyContinue
-          Copy-Item "build\Release\puttygen.exe" "output\" -ErrorAction SilentlyContinue
-          Copy-Item "build\Release\pageant.exe" "output\" -ErrorAction SilentlyContinue
-          Copy-Item "build\Release\plink.exe" "output\" -ErrorAction SilentlyContinue
-          Copy-Item "build\Release\pscp.exe" "output\" -ErrorAction SilentlyContinue
-          Copy-Item "build\Release\psftp.exe" "output\" -ErrorAction SilentlyContinue
+          Copy-Item "build\Release\putty.exe" "output\" -ErrorAction Stop
         shell: powershell
       
       - name: Upload build artifacts
@@ -101,12 +112,12 @@ jobs:
           tag_name: putty-modified-${{ github.run_number }}
           name: Modified PuTTY Build ${{ github.run_number }}
           body: |
-            Modified PuTTY build with increased session list size (1000 sessions).
+            Modified PuTTY build with increased session list visible height.
             
-            Built from latest PuTTY main branch.
+            Built from latest PuTTY release.
             
             **Modifications:**
-            - Increased session list maximum from 200 to 1000
+            - Increased session list dropdown height for better visibility (no scrolling needed for more sessions)
           files: output/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
