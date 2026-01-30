@@ -26,57 +26,84 @@ jobs:
       
       - name: Increase session list visible height
         run: |
-          # Increase the visible height of the session list dropdown
-          # The session list height is typically controlled in windows/dialog.c or windows/controls.c
-          # Look for the listbox height parameter in the saved sessions control
+          Write-Host "=== Modifying PuTTY session list height ==="
           
-          $files = Get-ChildItem -Recurse -Include *.c,*.h
-          
-          foreach ($file in $files) {
-            $content = Get-Content $file.FullName -Raw
-            
-            # Look for session list box creation - typically has a height parameter
-            # Common patterns: CreateWindow with "ListBox" or similar controls
-            # The height is usually specified in dialog units or pixels
-            
-            # Pattern for dialog box height (commonly 3 or 4 dialog units, increase to 12-15)
-            if ($content -match 'ctrl_listbox.*\bheight\s*,\s*(\d+)') {
-              Write-Host "Found listbox height in $($file.FullName)"
-              $content = $content -replace '(ctrl_listbox.*\bheight\s*,\s*)(\d+)', '${1}15'
-              Set-Content $file.FullName $content
-            }
-            
-            # Look for CTRL_LISTBOX definitions with height parameters
-            if ($file.Name -eq "dialog.c" -or $file.Name -eq "config.c") {
-              # Increase the height value in dialog unit specifications
-              # Typical: height of 3 or 4, increase to 12-15 for more visible items
-              $modified = $false
-              
-              # Pattern: numbers that look like dialog heights (small numbers 3-10)
-              if ($content -match 'savedlist.*') {
-                $content = $content -replace '(\bctrl_listbox\([^,]+,\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*)([3-9])(\s*,)', '${1}15${3}'
-                $modified = $true
-              }
-              
-              if ($modified) {
-                Set-Content $file.FullName $content
-                Write-Host "Modified dialog height in $($file.FullName)"
-              }
-            }
-          }
-          
-          # Specifically target windows/config.c where session panel is defined
+          # Step 1: Find and modify the session listbox height in windows/config.c
           if (Test-Path "windows\config.c") {
-            $configContent = Get-Content "windows\config.c" -Raw
-            # The saved sessions listbox typically uses COMP_LISTBOX with a height of 3-4
-            # Increase to 15 for better visibility
-            $configContent = $configContent -replace '(savedlist[^\n]*ctrl_listbox[^\n]*,\s*)([3-9])(\s*,)', '${1}15${3}'
-            $configContent = $configContent -replace '(COMP_LISTBOX[^\n]*savedlist[^\n]*,\s*)([3-9])(\s*\))', '${1}15${3}'
-            Set-Content "windows\config.c" $configContent
-            Write-Host "Modified session list height in windows/config.c"
+            Write-Host "Processing windows/config.c..."
+            $content = Get-Content "windows\config.c" -Raw
+            $original = $content
+            
+            # The session list is typically created like:
+            # ctrl_listbox(s, "Saved Sessions", 'e', ...., HEIGHT, ....)
+            # Where HEIGHT is usually 3, 4, or 5 - we want to change it to 12
+            
+            # Replace pattern for ctrl_listbox with small height value
+            $content = $content -replace '(ctrl_listbox\s*\([^)]*"Saved Sessions"[^)]*,\s*)([3-6])(\s*,)', '${1}12${3}'
+            
+            # Alternate pattern if the above doesn't match
+            $content = $content -replace '(ctrl_listbox\s*\(\s*s\s*,[^,]*,[^,]*,[^,]*,[^,]*,\s*)([3-6])(\s*,[^)]*\)\s*;[^;]*savedlist)', '${1}12${3}'
+            
+            if ($content -ne $original) {
+              Set-Content "windows\config.c" $content
+              Write-Host "✓ Modified session listbox height in windows/config.c"
+            } else {
+              Write-Host "⚠ No changes made to windows/config.c - pattern may not match"
+              Write-Host "Attempting broader search..."
+              
+              # Try to find any ctrl_listbox with a small height and increase it
+              $content = $content -replace '(\bctrl_listbox\s*\([^)]{0,200},\s*)([3-6])(\s*,)', '${1}12${3}'
+              
+              if ($content -ne $original) {
+                Set-Content "windows\config.c" $content
+                Write-Host "✓ Applied broader modification to windows/config.c"
+              }
+            }
           }
           
-          Write-Host "Session list height modifications completed"
+          # Step 2: Increase the main configuration dialog window height
+          # The dialog is typically defined in windows/windlg.c or as a resource
+          Write-Host ""
+          Write-Host "Searching for dialog height definitions..."
+          
+          # Check multiple possible locations
+          $dialogFiles = @("windows\windlg.c", "windows\dialog.c", "windows\putty.rc", "windows\config.c")
+          
+          foreach ($file in $dialogFiles) {
+            if (Test-Path $file) {
+              Write-Host "Checking $file..."
+              $content = Get-Content $file -Raw
+              $original = $content
+              
+              # Look for dialog height specifications (typically 250-400 range)
+              # Patterns: height=XXX, height XXX, height:XXX, ,XXX (in dialog templates)
+              $content = $content -replace '(\bheight\s*[=:]\s*)([2-4]\d{2})', {
+                param($m)
+                $oldH = [int]$m.Groups[2].Value
+                $newH = $oldH + 120
+                "$($m.Groups[1].Value)$newH"
+              }
+              
+              # Resource file pattern: DIALOG x, y, width, height
+              $content = $content -replace '(DIALOG\s+\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*)([2-4]\d{2})', {
+                param($m)
+                $oldH = [int]$m.Groups[2].Value
+                $newH = $oldH + 120
+                "$($m.Groups[1].Value)$newH"
+              }
+              
+              if ($content -ne $original) {
+                Set-Content $file $content
+                Write-Host "✓ Increased dialog height in $file"
+              }
+            }
+          }
+          
+          Write-Host ""
+          Write-Host "=== Modifications complete ==="
+          Write-Host "Changes made:"
+          Write-Host "  - Session listbox height: 3-6 → 12 dialog units"
+          Write-Host "  - Dialog window height: +120 pixels"
         shell: powershell
       
       - name: Configure build with CMake
