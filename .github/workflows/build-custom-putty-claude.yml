@@ -2,9 +2,6 @@ name: Build Custom PuTTY - Claude
 
 on:
   workflow_dispatch:
-  schedule:
-    # Run weekly on Sundays at 2am UTC
-    - cron: '0 2 * * 0'
 
 jobs:
   build-putty:
@@ -69,7 +66,7 @@ jobs:
         run: |
           mkdir build
           cd build
-          cmake .. -G "Visual Studio 17 2022" -A Win32
+          cmake .. -G "Visual Studio 17 2022" -A x64
         shell: cmd
       
       - name: Build PuTTY
@@ -90,20 +87,3 @@ jobs:
           name: putty-modified-windows
           path: output/
           retention-days: 30
-      
-      - name: Create release (optional)
-        if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: putty-modified-${{ github.run_number }}
-          name: Modified PuTTY Build ${{ github.run_number }}
-          body: |
-            Modified PuTTY build with increased session list visible height.
-            
-            Built from latest PuTTY release.
-            
-            **Modifications:**
-            - Increased session list dropdown height for better visibility (no scrolling needed for more sessions)
-          files: output/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
