@@ -11,93 +11,84 @@ jobs:
     - name: Clone PuTTY Repository
       run: git clone https://git.tartarus.org/simon/putty.git .
 
-    - name: List Directory for Debugging
-      run: ls -R windows
-      
     - name: Smart Patch UI
       shell: python
       run: |
         import re
         import sys
-
-        FILE_PATH = "windows/putty.rc"
-        # How much taller do you want the list?
-        ADD_HEIGHT = 200
-
-        try:
-            with open(FILE_PATH, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-        except FileNotFoundError:
-            print(f"CRITICAL: Could not find {FILE_PATH}")
-            sys.exit(1)
-
-        print(f"Read {len(content)} bytes from {FILE_PATH}")
+        import os
+        import glob
 
         # ---------------------------------------------------------
-        # 1. FIND & RESIZE MAIN WINDOW (IDD_MAINBOX)
+        # 1. LOCATE THE CORRECT FILE
         # ---------------------------------------------------------
-        # Pattern: IDD_MAINBOX followed by DIALOG/DIALOGEX ... x, y, w, h
-        # We capture the line up to the height, and the height itself.
-        # Example: IDD_MAINBOX DIALOG DISCARDABLE 0, 0, 300, 218
+        # Search all .rc and .rc2 files in the windows/ directory
+        search_pattern = "windows/*.rc*"
+        target_file = None
         
-        main_box_pattern = r'(IDD_MAINBOX\s+\w+[^\n]+0,\s*0,\s*\d+,\s*)(\d+)'
+        candidates = glob.glob("windows/*.rc") + glob.glob("windows/*.rc2")
+        
+        print(f"Scanning files: {candidates}")
+
+        for filepath in candidates:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                if "IDD_MAINBOX" in f.read():
+                    target_file = filepath
+                    break
+        
+        if not target_file:
+            print("CRITICAL ERROR: Could not find any file containing 'IDD_MAINBOX'.")
+            sys.exit(1)
+            
+        print(f"FOUND TARGET FILE: {target_file}")
+
+        # ---------------------------------------------------------
+        # 2. READ & CONFIG
+        # ---------------------------------------------------------
+        with open(target_file, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+
+        ADD_HEIGHT = 200 # How many pixels to add
+        
+        # ---------------------------------------------------------
+        # 3. RESIZE MAIN WINDOW (IDD_MAINBOX)
+        # ---------------------------------------------------------
+        # Pattern matches: IDD_MAINBOX ... 0, 0, 300, 218
+        # We look for the last number in that sequence
+        main_box_pattern = r'(IDD_MAINBOX\s+[^\n]+0,\s*0,\s*\d+,\s*)(\d+)'
         match = re.search(main_box_pattern, content)
         
         if not match:
-            print("ERROR: Could not find IDD_MAINBOX definition.")
-            # Print a snippet to help debug
-            print("Snippet of file start:")
-            print(content[:1000])
+            print("ERROR: Found file but regex failed to match IDD_MAINBOX dimensions.")
             sys.exit(1)
 
         original_main_height = int(match.group(2))
         new_main_height = original_main_height + ADD_HEIGHT
         
-        # Replace the Main Dialog Height
         content = content.replace(match.group(0), f"{match.group(1)}{new_main_height}")
         print(f"Resized Main Window: {original_main_height} -> {new_main_height}")
 
         # ---------------------------------------------------------
-        # 2. FIND & RESIZE SESSION LIST
+        # 4. RESIZE SESSION LIST
         # ---------------------------------------------------------
-        # The session list usually uses IDC_SESSIONS or generic ID.
-        # It is usually 120 width.
-        # Pattern: LISTBOX id, x, y, width, height
-        
-        # Regex explanation:
-        # LISTBOX   = keyword
-        # [^,]+     = the ID (e.g. IDC_SESSIONS)
-        # \d+,\s*\d+ = X, Y
-        # 120       = Width (The session list is almost always 120 wide in PuTTY)
-        # (\d+)     = Height (Capture group 2)
+        # Usually width 120. Pattern: LISTBOX id, x, y, 120, height
         listbox_pattern = r'(LISTBOX\s+[^,]+,\s*\d+,\s*\d+,\s*120\s*,\s*)(\d+)'
         
         def resize_listbox(m):
             h = int(m.group(2))
-            # Heuristic: Only resize if it looks like the session list (height > 50)
-            if h > 50:
-                print(f"Resizing ListBox (Width 120): {h} -> {h + ADD_HEIGHT}")
+            if h > 50: # Sanity check
                 return f"{m.group(1)}{h + ADD_HEIGHT}"
             return m.group(0)
 
         content, count = re.subn(listbox_pattern, resize_listbox, content)
-        if count == 0:
-            print("WARNING: Could not identify Session ListBox to resize.")
-            # Fallback: Try searching for IDC_SESSIONS specifically regardless of width
-            content = re.sub(r'(LISTBOX\s+IDC_SESSIONS,\s*\d+,\s*\d+,\s*\d+\s*,\s*)(\d+)', resize_listbox, content)
+        print(f"Resized {count} listboxes.")
 
         # ---------------------------------------------------------
-        # 3. MOVE BOTTOM BUTTONS (Open, Cancel, etc.)
+        # 5. MOVE BOTTOM BUTTONS
         # ---------------------------------------------------------
-        # We only want to move buttons that are currently at the bottom of the main dialog.
-        # The bottom area is roughly at Y = original_main_height - 20
-        
-        bottom_threshold = original_main_height - 30 
+        # Move buttons that are currently near the bottom of the original window
+        bottom_threshold = original_main_height - 35 
 
-        # Pattern matches PUSHBUTTON or DEFPUSHBUTTON
-        # Group 1: Prefix
-        # Group 2: Y coordinate
-        # Group 3: Suffix
         button_pattern = r'((?:PUSHBUTTON|DEFPUSHBUTTON)\s+"[^"]+",\s*[^,]+,\s*\d+,\s*)(\d+)(,.*)'
 
         def move_button(m):
@@ -105,23 +96,21 @@ jobs:
             y = int(m.group(2))
             suffix = m.group(3)
             
-            # Only move it if it's near the bottom of the original window
             if y > bottom_threshold:
                 new_y = y + ADD_HEIGHT
-                # Only log distinct shifts
                 return f"{prefix}{new_y}{suffix}"
             return m.group(0)
 
-        content = re.sub(button_pattern, move_button, content)
-        print("Moved bottom buttons down.")
+        content, b_count = re.subn(button_pattern, move_button, content)
+        print(f"Moved {b_count} buttons down.")
 
         # ---------------------------------------------------------
-        # WRITE FILE
+        # 6. SAVE
         # ---------------------------------------------------------
-        with open(FILE_PATH, 'w', encoding='utf-8') as f:
+        with open(target_file, 'w', encoding='utf-8') as f:
             f.write(content)
             
-        print("SUCCESS: Patched putty.rc")
+        print("SUCCESS: Patched UI resources.")
 
     - name: Configure CMake
       run: cmake -B build -G "Visual Studio 17 2022" -A x64
