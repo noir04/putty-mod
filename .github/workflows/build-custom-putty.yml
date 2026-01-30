@@ -9,44 +9,79 @@ jobs:
 
     steps:
     - name: Clone PuTTY Repository
-      # We clone the official repository
       run: git clone https://git.tartarus.org/simon/putty.git .
 
-    - name: Modify Session List Size
-      shell: powershell
+    - name: Patch UI with Python
+      shell: python
       run: |
-        $rcFile = "windows/putty.rc"
+        import re
+        import sys
         
-        if (-Not (Test-Path $rcFile)) {
-            Write-Error "Could not find $rcFile. Source structure may have changed."
-            exit 1
-        }
+        rc_file = "windows/putty.rc"
+        
+        try:
+            with open(rc_file, 'r') as f:
+                content = f.read()
+        except FileNotFoundError:
+            print(f"Error: Could not find {rc_file}")
+            sys.exit(1)
 
-        $content = Get-Content $rcFile -Raw
+        original_content = content
+        
+        # --- CONFIGURATION ---
+        # We want to add this much height to everything
+        EXTRA_HEIGHT = 150 
+        
+        # Current known dimensions in standard PuTTY source (approximate)
+        # IDD_MAINBOX: 300 wide, 218 high
+        # Session List: 120 wide, 110 high
+        # Bottom Buttons (Open/Cancel): Y position approx 198
+        
+        # 1. Resize Main Dialog Height (Find '218' at end of IDD_MAINBOX definition)
+        # Matches: IDD_MAINBOX DIALOG DISCARDABLE 0, 0, 300, 218
+        content = re.sub(
+            r'(IDD_MAINBOX\s+DIALOG.*300\s*,\s*)218', 
+            f'\\g<1>{218 + EXTRA_HEIGHT}', 
+            content
+        )
 
-        # 1. Increase Dialog Height (IDD_MAINBOX)
-        # Finds "218" (standard height) in the main dialog definition and changes it to "350"
-        if ($content -match '(IDD_MAINBOX\s+DIALOG[^0-9]+0,\s*0,\s*300,\s*)218') {
-            $content = $content -replace '(IDD_MAINBOX\s+DIALOG[^0-9]+0,\s*0,\s*300,\s*)218', '${1}350'
-            Write-Host "Success: Patched Dialog Height."
-        } else {
-            Write-Warning "Could not find IDD_MAINBOX dimensions to patch. The source code might have changed."
-        }
+        # 2. Resize Session ListBox Height (Find '110' in a LISTBOX def with width 120)
+        # Matches: LISTBOX ..., 120, 110, ...
+        content = re.sub(
+            r'(LISTBOX\s+.*,\s*120\s*,\s*)110', 
+            f'\\g<1>{110 + EXTRA_HEIGHT}', 
+            content
+        )
 
-        # 2. Increase ListBox Height
-        # Finds "110" (standard list height) specifically inside the listbox definition and changes to "240"
-        # We look for the standard width (120) followed by height (110)
-        if ($content -match '(\s+120,\s*)110') {
-            $content = $content -replace '(\s+120,\s*)110', '${1}240'
-            Write-Host "Success: Patched ListBox Height."
-        } else {
-             Write-Warning "Could not find ListBox dimensions to patch."
-        }
+        # 3. Move "Open" and "Cancel" buttons down
+        # Matches: DEFPUSHBUTTON "&Open",IDOK,192,198,50,14
+        # Matches: PUSHBUTTON "Cancel",IDCANCEL,244,198,50,14
+        # We look for the Y coordinate 198 and replace it
+        new_y = 198 + EXTRA_HEIGHT
+        content = re.sub(
+            r'(BUTTON\s+".*?",\s*ID(?:OK|CANCEL|HELP).*?,\s*198\s*,)', 
+            f'\\g<1>{new_y},', # This regex is tricky, let's try a simpler one specifically for the buttons
+            content
+        )
+        
+        # Precise replacement for bottom buttons to avoid breaking other things
+        # Replace ",198," with ",348," (or whatever new_y is) but only for buttons
+        content = re.sub(r'(IDOK\s*,\s*\d+\s*,\s*)198', f'\\g<1>{new_y}', content)
+        content = re.sub(r'(IDCANCEL\s*,\s*\d+\s*,\s*)198', f'\\g<1>{new_y}', content)
+        content = re.sub(r'(IDHELP\s*,\s*\d+\s*,\s*)198', f'\\g<1>{new_y}', content)
 
-        Set-Content -Path $rcFile -Value $content
+        # Check if we actually did anything
+        if content == original_content:
+            print("WARNING: No changes were applied! The putty.rc format may have changed significantly.")
+            # We exit with error so you know it failed immediately
+            sys.exit(1)
+        else:
+            print(f"Successfully patched {rc_file}")
+
+        with open(rc_file, 'w') as f:
+            f.write(content)
 
     - name: Configure CMake
-      # We use the system installed CMake
       run: cmake -B build -G "Visual Studio 17 2022" -A x64
 
     - name: Build
