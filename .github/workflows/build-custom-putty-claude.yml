@@ -1,4 +1,4 @@
-name: Build Modified PuTTY
+name: Build Custom PuTTY - Claude
 
 on:
   workflow_dispatch:
