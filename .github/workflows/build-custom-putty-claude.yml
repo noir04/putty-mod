@@ -1,4 +1,4 @@
-name: Build Custom PuTTY - Claude
+name: Build Modified PuTTY
 
 on:
   workflow_dispatch:
@@ -12,11 +12,9 @@ jobs:
     
     steps:
       - name: Checkout PuTTY repository
-        uses: actions/checkout@v4
-        with:
-          repository: 'https://git.tartarus.org/simon/putty.git'
-          ref: 'main'
-          fetch-depth: 1
+        run: |
+          git clone https://git.tartarus.org/simon/putty.git .
+        shell: bash
       
       - name: Set up build environment
         run: |
